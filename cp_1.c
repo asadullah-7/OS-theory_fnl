@@ -1,76 +1,116 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <pthread.h>
+#include <semaphore.h>
 #include <unistd.h>
 
-int main() {
-    int pipe1[2], pipe2[2];
-    pid_t pid1, pid2, pid3;
+#define TOTAL_PASSENGERS 9   // must be multiple of 3
 
-    // Create first and second pipes
-    if (pipe(pipe1) == -1 || pipe(pipe2) == -1) {
-        perror("Pipe failed");
-        return 1;
+// ===== GLOBAL VARIABLES =====
+pthread_mutex_t lock;
+
+sem_t boarding;      // controls available seats
+sem_t allSeated;     // signals ride to start
+sem_t rideOver;      // signals passengers to leave
+
+int count = 0;       // passengers currently seated
+
+// ===== FUNCTION DECLARATIONS =====
+void* passanger_thread(void* arg);
+void board_ride();
+void start_ride();
+void end_ride();
+
+// ===== PASSENGER THREAD =====
+void* passanger_thread(void* arg)
+{
+    int id = *(int*)arg;
+
+    printf("Passenger %d has arrived and waiting to board\n", id);
+
+    sem_wait(&boarding);   // wait for seat
+
+    pthread_mutex_lock(&lock);
+    count++;
+    printf("Passenger %d boarded (count = %d)\n", id, count);
+
+    if (count == 3)
+    {
+        sem_post(&allSeated);   // last passenger wakes ride
+    }
+    pthread_mutex_unlock(&lock);
+
+    sem_wait(&rideOver);   // wait till ride finishes
+
+    pthread_mutex_lock(&lock);
+    count--;
+    pthread_mutex_unlock(&lock);
+
+    sem_post(&boarding);   // seat freed
+
+    return NULL;
+}
+
+// ===== RIDE CONTROLLER =====
+void board_ride()
+{
+    while (1)
+    {
+        sem_wait(&allSeated);   // wait until 3 passengers ready
+
+        printf("\nAll three seats are filled\n");
+        start_ride();
+        end_ride();
+
+        // release all 3 passengers
+        sem_post(&rideOver);
+        sem_post(&rideOver);
+        sem_post(&rideOver);
+    }
+}
+
+// ===== RIDE ACTIONS =====
+void start_ride()
+{
+    printf("Ride started 🚀\n");
+    sleep(2);
+}
+
+void end_ride()
+{
+    printf("Ride finished 🎢\n\n");
+}
+
+// ===== MAIN FUNCTION =====
+int main()
+{
+    pthread_t passengers[TOTAL_PASSENGERS];
+    pthread_t rideThread;
+    int ids[TOTAL_PASSENGERS];
+
+    // init mutex & semaphores
+    pthread_mutex_init(&lock, NULL);
+
+    sem_init(&boarding, 0, 3);     // 3 seats
+    sem_init(&allSeated, 0, 0);
+    sem_init(&rideOver, 0, 0);
+
+    // start ride controller thread
+    pthread_create(&rideThread, NULL, (void*)board_ride, NULL);
+
+    // create passenger threads
+    for (int i = 0; i < TOTAL_PASSENGERS; i++)
+    {
+        ids[i] = i + 1;
+        pthread_create(&passengers[i], NULL, passanger_thread, &ids[i]);
+        sleep(1);   // stagger arrivals
     }
 
-    // ================== CHILD 1 -> ls / -R ==================
-    pid1 = fork();
-    if (pid1 == 0) {
-        // Redirect output of ls to pipe1
-        dup2(pipe1[1], STDOUT_FILENO);
-        close(pipe1[0]);
-        close(pipe1[1]);
-        close(pipe2[0]);
-        close(pipe2[1]);
-
-        execlp("ls", "ls", "/", "-R", NULL);
-        perror("execlp failed");
-        exit(1);
+    // wait for passengers
+    for (int i = 0; i < TOTAL_PASSENGERS; i++)
+    {
+        pthread_join(passengers[i], NULL);
     }
-
-    // ================== CHILD 2 -> grep "std" ==================
-    pid2 = fork();
-    if (pid2 == 0) {
-        // Input from pipe1, output to pipe2
-        dup2(pipe1[0], STDIN_FILENO);
-        dup2(pipe2[1], STDOUT_FILENO);
-
-        close(pipe1[0]);
-        close(pipe1[1]);
-        close(pipe2[0]);
-        close(pipe2[1]);
-
-        execlp("grep", "grep", "std", NULL);
-        perror("execlp failed");
-        exit(1);
-    }
-
-    // ================== CHILD 3 -> more ==================
-    pid3 = fork();
-    if (pid3 == 0) {
-        // Input from pipe2
-        dup2(pipe2[0], STDIN_FILENO);
-
-        close(pipe1[0]);
-        close(pipe1[1]);
-        close(pipe2[0]);
-        close(pipe2[1]);
-
-        execlp("more", "more", NULL);
-        perror("execlp failed");
-        exit(1);
-    }
-
-    // ================== Parent Process ==================
-    close(pipe1[0]);
-    close(pipe1[1]);
-    close(pipe2[0]);
-    close(pipe2[1]);
-
-    // Wait for all children
-//    wait(NULL);
-//    wait(NULL);
-//    wait(NULL);
 
     return 0;
 }
-
